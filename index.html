@@ -24,7 +24,8 @@
     .btn-b { background: var(--accent-b); }
 
     #host-view { display: none; padding: 20px; flex-direction: column; gap: 20px; }
-    .host-header { display: flex; justify-content: space-between; align-items: center; background: var(--card-bg); padding: 15px 25px; border-radius: 16px; backdrop-filter: blur(10px); border: 1px solid var(--border); }
+    .host-header { display: flex; flex-direction: column; align-items: center; background: var(--card-bg); padding: 15px 25px; border-radius: 16px; backdrop-filter: blur(10px); border: 1px solid var(--border); text-align: center; }
+    
     .match-arena { display: grid; grid-template-columns: 1fr auto 1fr; gap: 20px; align-items: center; background: var(--card-bg); padding: 30px; border-radius: 20px; backdrop-filter: blur(10px); border: 1px solid var(--border); }
     .candidate-card { text-align: center; padding: 20px; border-radius: 16px; background: rgba(255,255,255,0.03); }
     .candidate-card.a { border-top: 4px solid var(--accent-a); }
@@ -60,7 +61,7 @@
     <button class="btn btn-b" onclick="showConnect()">📱 Пульт Судьи (Экраны #1-3)</button>
     
     <div id="connect-box" style="display:none; margin-top: 20px;">
-      <input type="text" id="host-id-input" placeholder="Введите ID Комнаты с экрана">
+      <input type="text" id="host-id-input" placeholder="Введите ID Комнаты">
       <input type="text" id="judge-name-input" placeholder="Имя/Номер Судьи (1, 2 или 3)">
       <button class="btn btn-a" onclick="initJudge()">Подключиться</button>
     </div>
@@ -68,8 +69,10 @@
 
   <div id="host-view">
     <div class="host-header">
-      <h2>Сетка TOP 16</h2>
-      <div>ID Комнаты для судей: <strong id="room-id" style="color: #6366f1;">Подключение...</strong> <button onclick="createPeerHost()" style="margin-left: 10px; padding: 4px 8px; font-size: 0.8rem;">Обновить ID</button></div>
+      <h2 style="margin-bottom: 10px;">Сетка TOP 16</h2>
+      <div style="margin-bottom: 15px;">ID Комнаты: <strong id="room-id" style="color: #6366f1;">Подключение к серверу...</strong></div>
+      <img id="qr-code" style="display: none; border-radius: 10px; border: 4px solid white; width: 150px; height: 150px;" alt="QR Code">
+      <p id="qr-hint" style="display: none; font-size: 0.9rem; margin-top: 10px; color: #94a3b8;">Пусть судьи отсканируют этот QR-код камерой</p>
     </div>
 
     <div class="match-arena">
@@ -99,7 +102,7 @@
 
   <div id="judge-view">
     <h2 id="match-title" style="text-align:center; margin-bottom:20px;">Оценка матча</h2>
-    <div id="evaluation-forms">Ожидание начала матча...</div>
+    <div id="evaluation-forms">Ожидание подключения к экрану...</div>
     <button class="btn btn-a" style="width: 100%; margin-top: 20px;" onclick="submitVotes()">Отправить Голос</button>
   </div>
 
@@ -118,6 +121,16 @@
       [['', '']]
     ];
 
+    // Проверка, пришел ли судья по QR-коду
+    window.onload = () => {
+      const urlParams = new URLSearchParams(window.location.search);
+      const roomFromQR = urlParams.get('room');
+      if (roomFromQR) {
+        document.getElementById('host-id-input').value = roomFromQR;
+        showConnect();
+      }
+    };
+
     function showConnect() {
       document.getElementById('connect-box').style.display = 'block';
     }
@@ -133,35 +146,39 @@
     }
 
     function createPeerHost() {
-      document.getElementById('room-id').innerText = 'Генерация...';
       if (peer) peer.destroy();
 
-      // Генерация случайного короткого ID
-      const customId = 'top16-' + Math.floor(1000 + Math.random() * 9000);
-
-      peer = new Peer(customId, {
-        debug: 1,
+      // Оставляем ID пустым, сервер сгенерирует надежный уникальный ключ
+      peer = new Peer({
         config: {
-          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' }
+          ]
         }
       });
 
       peer.on('open', id => {
         document.getElementById('room-id').innerText = id;
+        
+        // Генерируем QR-код со ссылкой для судей
+        const joinUrl = window.location.href.split('?')[0] + '?room=' + id;
+        const qrImg = document.getElementById('qr-code');
+        qrImg.src = 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=' + encodeURIComponent(joinUrl);
+        qrImg.style.display = 'block';
+        document.getElementById('qr-hint').style.display = 'block';
       });
 
       peer.on('error', err => {
-        console.error(err);
-        document.getElementById('room-id').innerText = 'Ошибка соединения. Нажмите "Обновить ID"';
+        document.getElementById('room-id').innerText = 'Ошибка: ' + err.type + '. Обновите страницу.';
       });
 
       peer.on('connection', conn => {
         connections.push(conn);
         conn.on('data', data => handleJudgeData(data));
-        // Отправляем текущий матч при подключении
         setTimeout(() => {
-          conn.send({ type: 'NEW_MATCH', match: bracket[currentMatch.round][currentMatch.index] });
-        }, 500);
+          if(conn.open) conn.send({ type: 'NEW_MATCH', match: bracket[currentMatch.round][currentMatch.index] });
+        }, 1000);
       });
     }
 
@@ -261,14 +278,18 @@
       const hostId = document.getElementById('host-id-input').value.trim();
       judgeId = document.getElementById('judge-name-input').value.trim() || 'Judge';
 
-      if (!hostId) return alert('Введите ID Хоста');
+      if (!hostId) return alert('ID комнаты не найден');
+      if (!judgeId) return alert('Введите ваш номер судьи (1, 2 или 3)');
 
       document.getElementById('mode-select').style.display = 'none';
       document.getElementById('judge-view').style.display = 'block';
 
       peer = new Peer({
         config: {
-          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' }
+          ]
         }
       });
 
@@ -276,7 +297,7 @@
         conn = peer.connect(hostId);
         
         conn.on('open', () => {
-          console.log('Подключено к хосту!');
+          document.getElementById('evaluation-forms').innerHTML = '<p style="text-align:center; color:#10b981;">Успешно подключено к экрану!</p>';
         });
 
         conn.on('data', data => {
@@ -287,7 +308,7 @@
       });
 
       peer.on('error', err => {
-        alert('Ошибка подключения к комнате: ' + err.type);
+        alert('Ошибка подключения: убедитесь, что Главный экран открыт.');
       });
     }
 
